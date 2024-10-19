@@ -11,22 +11,50 @@ from nltk.stem import WordNetLemmatizer
 import ssl
 import sqlite3
 from flask_cors import CORS
+import hashlib
+from datetime import datetime
 
 # Enable SSL verification bypass
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# Download NLTK resources
+# Download NLTK resources (uncomment if not already downloaded)
 # nltk.download('punkt')
 # nltk.download('stopwords')
 # nltk.download('wordnet')
 
 # Constants
-API_KEY = 'kAT0mG6klj8ISIZ466thZPTBM9OInU_hgTD1ZXofFOpN39ZC'  # Replace with your API key
 NEWS_APIS = [
-    {'name': 'currents', 'url': 'https://api.currentsapi.services/v1/latest-news?country=in'},
-    # Add more APIs here
+    {
+        'name': 'newsapi',
+        'url': 'https://newsapi.org/v2/top-headlines?',
+        'key_param': 'apiKey',
+        'key': '2bb8b3db5aa248228b5b197119330502'
+    },
+    {
+        'name': 'gnews',
+        'url': 'https://gnews.io/api/v4/search?q=example',
+        'key_param': 'token',
+        'key': '0fe8122323c7cd7c58ad72b1e7083a07'
+    },
+    # {
+    #     'name': 'newsdata',
+    #     'url': 'https://newsdata.io/api/1/latest?',
+    #     'key_param': 'apikey',
+    #     'key': 'pub_557631579157fd31fd591e8d033145dddec16'
+    # },
+    {
+        'name': 'guardian',
+        'url': 'https://content.guardianapis.com/search?',
+        'key_param': 'api-key',
+        'key': 'fd9c0066-0043-4b5d-b213-1e455b28fd87'
+    },
+    {
+        'name': 'currents',
+        'url': 'https://api.currentsapi.services/v1/latest-news?',
+        'key_param': 'apiKey',
+        'key': 'kAT0mG6klj8ISIZ466thZPTBM9OInU_hgTD1ZXofFOpN39ZC'
+    }
 ]
-
 
 # Flask app
 app = Flask(__name__)
@@ -37,7 +65,6 @@ def init_db():
     conn = sqlite3.connect('user_interactions.db')
     c = conn.cursor()
     
-    # Create the interactions table
     c.execute('''
         CREATE TABLE IF NOT EXISTS interactions (
             user_id TEXT,
@@ -47,7 +74,6 @@ def init_db():
         )
     ''')
     
-    # Create the user preferences table
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_preferences (
             user_id TEXT,
@@ -62,48 +88,131 @@ def init_db():
 
 init_db()
 
-# Fetch news articles from Currents API
-def fetch_news(api_key):
+# Helper functions
+def generate_id(title, url):
+    return hashlib.md5(f"{title}{url}".encode()).hexdigest()
+
+def fetch_news():
     all_articles = []
     for api in NEWS_APIS:
-        url = f"{api['url']}&apiKey={api_key}"
-        response = requests.get(url)
-        data = response.json()
+        params = {api['key_param']: api['key']}
         
-        if api['name'] == 'currents':
-            articles = parse_currents_api(data)
-        # Add more parsers for other APIs here
-        
-        all_articles.extend(articles)
+        if api['name'] == 'newsapi':
+            params['country'] = 'in'
+        elif api['name'] == 'gnews':
+            params['country'] = 'in'
+            params['lang'] = 'en'
+        elif api['name'] == 'newsdata':
+            params['country'] = 'in'
+        elif api['name'] == 'guardian':
+            params['q'] = 'india'
+        elif api['name'] == 'currents':
+            params['country'] = 'in'
+
+        try:
+            response = requests.get(api['url'], params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if api['name'] == 'newsapi':
+                articles = parse_newsapi(data)
+            elif api['name'] == 'gnews':
+                articles = parse_gnews(data)
+            elif api['name'] == 'newsdata':
+                articles = parse_newsdata(data)
+            elif api['name'] == 'guardian':
+                articles = parse_guardian(data)
+            elif api['name'] == 'currents':
+                articles = parse_currents(data)
+            
+            all_articles.extend(articles)
+        except requests.RequestException as e:
+            print(f"Error fetching data from {api['name']}: {str(e)}")
     
     return all_articles
 
-def parse_currents_api(data):
+# Parser functions
+def parse_newsapi(data):
     articles = []
-    for article in data['news']:
-        image_url = ''
-        if article.get('image'):
-            try:
-                response = requests.head(article['image'], timeout=5)
-                if response.status_code == 200:
-                    image_url = article['image']
-            except requests.RequestException:
-                # If there's any error (timeout, connection error, etc.), we'll just use an empty string
-                pass
-
+    for article in data.get('articles', []):
         articles.append({
-            'id': article['id'],
-            'title': article['title'],
-            'description': article['description'],
-            'url': article['url'],
+            'id': generate_id(article.get('title', ''), article.get('url', '')),
+            'title': article.get('title', ''),
+            'description': article.get('description', ''),
+            'url': article.get('url', ''),
             'author': article.get('author', 'Unknown'),
-            'image': image_url,
-            'published': article['published'],
-            'category': article['category'][0] if article['category'] else 'General',
+            'image': article.get('urlToImage', ''),
+            'published': article.get('publishedAt', ''),
+            'category': 'General',
+            'source': 'NewsAPI'
         })
     return articles
 
-# Preprocess text
+def parse_gnews(data):
+    articles = []
+    for article in data.get('articles', []):
+        articles.append({
+            'id': generate_id(article.get('title', ''), article.get('url', '')),
+            'title': article.get('title', ''),
+            'description': article.get('description', ''),
+            'url': article.get('url', ''),
+            'author': article.get('source', {}).get('name', 'Unknown'),
+            'image': article.get('image', ''),
+            'published': article.get('publishedAt', ''),
+            'category': 'General',
+            'source': 'GNews'
+        })
+    return articles
+
+def parse_newsdata(data):
+    articles = []
+    for article in data.get('results', []):
+        articles.append({
+            'id': generate_id(article.get('title', ''), article.get('link', '')),
+            'title': article.get('title', ''),
+            'description': article.get('description', ''),
+            'url': article.get('link', ''),
+            # 'author': article.get('creator', ['Unknown'])[0],
+            'image': article.get('image_url', ''),
+            'published': article.get('pubDate', ''),
+            'category': article.get('category', ['General'])[0],
+            'source': 'NewsData'
+        })
+    return articles
+
+def parse_guardian(data):
+    articles = []
+    for article in data.get('response', {}).get('results', []):
+        articles.append({
+            'id': generate_id(article.get('webTitle', ''), article.get('webUrl', '')),
+            'title': article.get('webTitle', ''),
+            'description': article.get('fields', {}).get('trailText', ''),
+            'url': article.get('webUrl', ''),
+            'author': 'The Guardian',
+            'image': article.get('fields', {}).get('thumbnail', ''),
+            'published': article.get('webPublicationDate', ''),
+            'category': article.get('sectionName', 'General'),
+            'source': 'The Guardian'
+        })
+    return articles
+
+def parse_currents(data):
+    articles = []
+    for article in data.get('news', []):
+        articles.append({
+            'id': article.get('id', generate_id(article.get('title', ''), article.get('url', ''))),
+            'title': article.get('title', ''),
+            'description': article.get('description', ''),
+            'url': article.get('url', ''),
+            'author': article.get('author', 'Unknown'),
+            'image': article.get('image', ''),
+            'published': article.get('published', ''),
+            'category': article.get('category', ['General'])[0],
+            'source': 'Currents API'
+        })
+    return articles
+
+# Text preprocessing
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
 
@@ -121,13 +230,13 @@ articles = []
 # Initialize articles
 def init_articles():
     global articles
-    articles = fetch_news(API_KEY)
+    articles = fetch_news()
     for article in articles:
         article['preprocessed'] = preprocess_text(article['description'])
 
 init_articles()
 
-# Update user preferences
+# User preference functions
 def update_user_preferences(user_id, category, interaction):
     conn = sqlite3.connect('user_interactions.db')
     c = conn.cursor()
@@ -144,7 +253,6 @@ def update_user_preferences(user_id, category, interaction):
     conn.commit()
     conn.close()
 
-# Get user preferences
 def get_user_preferences(user_id):
     conn = sqlite3.connect('user_interactions.db')
     c = conn.cursor()
@@ -155,24 +263,23 @@ def get_user_preferences(user_id):
     conn.close()
     return preferences
 
-# Define category-based recommendation function
+# Recommendation function
 def category_based_recommendation(user_id):
     user_preferences = get_user_preferences(user_id)
     
     if not user_preferences:
-        return list(range(len(articles)))  # Return all articles if user has no preferences
+        return list(range(len(articles)))
     
-    # Score articles based on user preferences
     article_scores = []
     for i, article in enumerate(articles):
         category_score = user_preferences.get(article['category'], 0)
         article_scores.append((i, category_score))
     
-    # Sort articles by score, with highest scores first
     sorted_articles = sorted(article_scores, key=lambda x: x[1], reverse=True)
     
     return [i for i, _ in sorted_articles]
 
+# Flask routes
 @app.route('/articles', methods=['GET'])
 def get_articles():
     page = int(request.args.get('page', 1))
@@ -180,7 +287,6 @@ def get_articles():
     start = (page - 1) * page_size
     end = start + page_size
     
-    # Fetch new articles if we're running out
     if end >= len(articles):
         init_articles()
     
@@ -191,9 +297,8 @@ def interact_with_article():
     data = request.json
     user_id = data.get('user_id')
     article_id = data.get('article_id')
-    interaction = data.get('interaction')  # 'like' or 'dislike'
+    interaction = data.get('interaction')
     
-    # Find the article and its category
     article = next((a for a in articles if a['id'] == article_id), None)
     if not article:
         return jsonify({'error': 'Article not found'}), 404
@@ -207,7 +312,6 @@ def interact_with_article():
     conn.commit()
     conn.close()
     
-    # Update user preferences
     update_user_preferences(user_id, category, interaction)
     
     return jsonify({'message': f'Article {interaction}d successfully!'})
@@ -223,7 +327,6 @@ def recommend():
         start = (page - 1) * page_size
         end = start + page_size
         
-        # Fetch new articles if we're running out
         if end >= len(articles):
             init_articles()
             recommendations = category_based_recommendation(user_id)
